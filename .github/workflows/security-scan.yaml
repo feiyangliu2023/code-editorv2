@@ -24,6 +24,7 @@ on:
         default: false
 
 env:
+  CODE_EDITOR_TARGETS: '[]'
   STANDALONE_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.standalone-run || false }}
 
 jobs:
