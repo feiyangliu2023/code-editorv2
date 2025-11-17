@@ -1,0 +1,198 @@
+name: SageMaker E2E Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      image-tag:
+        description: 'Docker image tag to test (default: latest)'
+        required: false
+        default: 'latest'
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 2 AM UTC
+
+env:
+  AWS_REGION: us-east-2
+  IDENTITY_CENTER_REGION: us-east-2
+  AWS_ACCOUNT_ID: '972818039265'
+  DOMAIN_NAME_PREFIX: 'code-editor-e2e-test-domain'
+  ECR_REPOSITORY_NAME: 'code-editor-sagemaker-e2e'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  sagemaker-e2e-test:
+    runs-on: ubuntu-latest
+    environment: sagemaker-e2e-tests-workflow-env
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/GitHubSageMakerE2ETestRole
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Get CloudFormation exports
+        id: get-exports
+        run: |
+          EXECUTION_ROLE_ARN=$(aws cloudformation list-exports \
+            --query "Exports[?Name=='SageMakerE2E-ExecutionRoleArn'].Value" \
+            --output text)
+          ECR_REPO_URI=$(aws cloudformation list-exports \
+            --query "Exports[?Name=='SageMakerE2E-ECRRepositoryUri'].Value" \
+            --output text)
+          
+          echo "execution-role-arn=$EXECUTION_ROLE_ARN" >> "$GITHUB_OUTPUT"
+          echo "ecr-repo-uri=$ECR_REPO_URI" >> "$GITHUB_OUTPUT"
+
+      - name: Get Identity Store ID
+        id: get-identity-store
+        run: |
+          IDENTITY_STORE_ID=$(aws sso-admin list-instances \
+            --region ${{ env.IDENTITY_CENTER_REGION }} \
+            --query 'Instances[0].IdentityStoreId' \
+            --output text)
+          SSO_INSTANCE_ARN=$(aws sso-admin list-instances \
+            --region ${{ env.IDENTITY_CENTER_REGION }} \
+            --query 'Instances[0].InstanceArn' \
+            --output text)
+          
+          echo "identity-store-id=$IDENTITY_STORE_ID" >> "$GITHUB_OUTPUT"
+          echo "sso-instance-arn=$SSO_INSTANCE_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Create SSO user
+        id: create-user
+        run: |
+          USER_ID=$(aws identitystore create-user \
+            --region ${{ env.IDENTITY_CENTER_REGION }} \
+            --identity-store-id ${{ steps.get-identity-store.outputs.identity-store-id }} \
+            --user-name "sagemaker-e2e-test-user-${{ github.run_id }}" \
+            --display-name "SageMaker E2E Test User" \
+            --name Formatted=string,FamilyName=Test,GivenName=User \
+            --emails Value=test-${{ github.run_id }}@example.com,Primary=true \
+            --query 'UserId' \
+            --output text)
+          
+          echo "user-id=$USER_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Create SageMaker domain
+        id: create-domain
+        run: |
+          DOMAIN_ID=$(aws sagemaker create-domain \
+            --domain-name "${{ env.DOMAIN_NAME_PREFIX }}-${{ github.run_id }}" \
+            --auth-mode SSO \
+            --default-user-settings "ExecutionRole=${{ steps.get-exports.outputs.execution-role-arn }}" \
+            --app-network-access-type PublicInternetOnly \
+            --query 'DomainArn' \
+            --output text | cut -d'/' -f2)
+          
+          echo "domain-id=$DOMAIN_ID" >> "$GITHUB_OUTPUT"
+          echo "Waiting for domain to be ready..."
+          aws sagemaker wait domain-in-service --domain-id $DOMAIN_ID
+
+      - name: Create user profile
+        id: create-profile
+        run: |
+          USER_PROFILE_NAME="test-user-${{ github.run_id }}"
+          
+          aws sagemaker create-user-profile \
+            --domain-id ${{ steps.create-domain.outputs.domain-id }} \
+            --user-profile-name $USER_PROFILE_NAME \
+            --single-sign-on-user-identifier ${{ steps.create-user.outputs.user-id }} \
+            --single-sign-on-user-value ${{ steps.create-user.outputs.user-id }}
+          
+          echo "user-profile-name=$USER_PROFILE_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Create Code Editor space
+        id: create-space
+        run: |
+          SPACE_NAME="test-space-${{ github.run_id }}"
+          
+          aws sagemaker create-space \
+            --domain-id ${{ steps.create-domain.outputs.domain-id }} \
+            --space-name $SPACE_NAME \
+            --space-settings '{
+              "AppType": "CodeEditor",
+              "CodeEditorAppSettings": {
+                "DefaultResourceSpec": {
+                  "InstanceType": "ml.t3.medium"
+                }
+              }
+            }'
+          
+          echo "space-name=$SPACE_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Create Code Editor app
+        id: create-app
+        run: |
+          aws sagemaker create-app \
+            --domain-id ${{ steps.create-domain.outputs.domain-id }} \
+            --space-name ${{ steps.create-space.outputs.space-name }} \
+            --app-type CodeEditor \
+            --app-name default \
+            --resource-spec "InstanceType=ml.t3.medium"
+          
+          echo "Waiting for app to be ready..."
+          sleep 120
+
+      - name: Get app URL
+        id: get-app-url
+        run: |
+          APP_URL=$(aws sagemaker describe-app \
+            --domain-id ${{ steps.create-domain.outputs.domain-id }} \
+            --space-name ${{ steps.create-space.outputs.space-name }} \
+            --app-type CodeEditor \
+            --app-name default \
+            --query 'AppUrl' \
+            --output text)
+          
+          echo "app-url=$APP_URL" >> "$GITHUB_OUTPUT"
+          echo "Code Editor URL: $APP_URL"
+
+      - name: Run E2E tests
+        run: |
+          echo "Running E2E tests against: ${{ steps.get-app-url.outputs.app-url }}"
+          # TODO: Add actual E2E test commands here
+
+      - name: Cleanup - Delete app
+        if: always()
+        run: |
+          aws sagemaker delete-app \
+            --domain-id ${{ steps.create-domain.outputs.domain-id }} \
+            --space-name ${{ steps.create-space.outputs.space-name }} \
+            --app-type CodeEditor \
+            --app-name default || true
+          sleep 60
+
+      - name: Cleanup - Delete space
+        if: always()
+        run: |
+          aws sagemaker delete-space \
+            --domain-id ${{ steps.create-domain.outputs.domain-id }} \
+            --space-name ${{ steps.create-space.outputs.space-name }} || true
+
+      - name: Cleanup - Delete user profile
+        if: always()
+        run: |
+          aws sagemaker delete-user-profile \
+            --domain-id ${{ steps.create-domain.outputs.domain-id }} \
+            --user-profile-name ${{ steps.create-profile.outputs.user-profile-name }} || true
+
+      - name: Cleanup - Delete domain
+        if: always()
+        run: |
+          aws sagemaker delete-domain \
+            --domain-id ${{ steps.create-domain.outputs.domain-id }} \
+            --retention-policy HomeEfsFileSystem=Delete || true
+
+      - name: Cleanup - Delete SSO user
+        if: always()
+        run: |
+          aws identitystore delete-user \
+            --region ${{ env.IDENTITY_CENTER_REGION }} \
+            --identity-store-id ${{ steps.get-identity-store.outputs.identity-store-id }} \
+            --user-id ${{ steps.create-user.outputs.user-id }} || true
