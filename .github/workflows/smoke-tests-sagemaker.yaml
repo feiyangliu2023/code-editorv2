@@ -2,6 +2,11 @@ name: Smoke Tests for SageMaker
 
 on: 
   workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: 'Commit SHA to use for artifacts'
+        required: false
+        type: string
 
 jobs:
   smoke-tests-sagemaker:
@@ -12,21 +17,22 @@ jobs:
       id-token: write
       contents: read
     env:
-      COMMIT_SHA: ${{ github.sha }}
+      COMMIT_SHA: ${{ inputs.commit_sha || github.sha }}
       GH_REF_NAME: ${{ github.ref_name }}
       SAGEMAKER_ARTIFACT_PREFIX: "code-editor-sagemaker-server"
       GH_TOKEN: ${{ github.token }}
-      AWS_REGION: us-east-2
+      AWS_REGION: us-west-2
       AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
       PROJECT_NAME: ${{ secrets.PROJECT_NAME }}
       DATAZONE_DOMAIN_ID: ${{ secrets.DATAZONE_DOMAIN_ID }}
       TEST_SAGEMAKER_ROLE: ${{ secrets.TEST_SAGEMAKER_ROLE }}
     steps:
-      - name: Checkout code
+      - name: Checkout code with LFS
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          lfs: true
 
       - name: Setup environment
         run: |
@@ -34,27 +40,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y quilt libxml2-utils jq libx11-dev libxkbfile-dev
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Download sagemaker build artifact by commit ID
-        run: |
-          gh run download --name "$COMMIT_SHA-code-editor-sagemaker-server-build"
-
-      - name: Check build artifacts exist
+      - name: Check local artifacts exist
         run: |
           ls -la
 
           FILES=(
-              "$COMMIT_SHA-$SAGEMAKER_ARTIFACT_PREFIX-build/$SAGEMAKER_ARTIFACT_PREFIX-build.tar.gz"
+              "artifacts/$SAGEMAKER_ARTIFACT_PREFIX-build.tar.gz"
           )
           
           # Check build artifact exists
           for file in "${FILES[@]}"; do
               if [ ! -f "$file" ]; then
-              echo "Error: $file not found for commit $COMMIT_SHA"
+              echo "Error: $file not found in artifacts/"
               exit 1
               fi
           done
@@ -67,7 +64,7 @@ jobs:
 
       - name: Extract artifacts
         run: |
-          tar -xzf "$COMMIT_SHA-$SAGEMAKER_ARTIFACT_PREFIX-build/$SAGEMAKER_ARTIFACT_PREFIX-build.tar.gz"
+          tar -xzf "artifacts/$SAGEMAKER_ARTIFACT_PREFIX-build.tar.gz"
 
       - name: Build and push Docker image
         run: | 
@@ -96,12 +93,9 @@ jobs:
           echo "ECR_IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
           echo "Image pushed successfully with SHA: ${IMAGE_SHA:0:12}..."
           
-          # Clean up local Docker images and build artifacts to free disk space
+          # Clean up local Docker images to free disk space
           docker rmi $ECR_REPOSITORY:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
           echo "Local Docker images cleaned up"
-          rm -rf vscode-reh-web-linux-x64
-          rm -rf $COMMIT_SHA-$SAGEMAKER_ARTIFACT_PREFIX-build
-          echo "Local build artifacts cleaned up"
 
       - name: Configure SageMaker role AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -251,7 +245,7 @@ jobs:
           
           echo "Created SageMaker space: $SPACE_NAME"
           echo "SAGEMAKER_SPACE_NAME=$SPACE_NAME" >> $GITHUB_ENV
-
+          
       - name: Start SageMaker code editor space
         run: |
           # Wait for space to be ready (200 seconds)
@@ -283,28 +277,18 @@ jobs:
             --app-name "default"
           
           echo "Started SageMaker space: $SAGEMAKER_SPACE_NAME"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Checkout code with LFS
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: true
       
-      - name: Fetch source artifact by commit ID
-        run: |
-          gh run download --name "$COMMIT_SHA-code-editor-sagemaker-server-src"
-          ls -la
-
-          FILES=(
-              "$COMMIT_SHA-$SAGEMAKER_ARTIFACT_PREFIX-src/$SAGEMAKER_ARTIFACT_PREFIX-src.tar.gz"
-          )
-          
-          # Check build artifact exists
-          for file in "${FILES[@]}"; do
-              if [ ! -f "$file" ]; then
-              echo "Error: $file not found for commit $COMMIT_SHA"
-              exit 1
-              fi
-          done
-
-          tar -xzf "$COMMIT_SHA-$SAGEMAKER_ARTIFACT_PREFIX-src/$SAGEMAKER_ARTIFACT_PREFIX-src.tar.gz"
-          rm -rf $COMMIT_SHA-$SAGEMAKER_ARTIFACT_PREFIX-src
-
-
       - name: E2E testing
         env:
             SSO_USERNAME: ${{ secrets.SSO_USERNAME }}
@@ -340,25 +324,35 @@ jobs:
             exit 1
           fi
           
-          DATAZONE_URL="https://${DATAZONE_DOMAIN_ID}.sagemaker.us-west-2.on.aws/projects/${PROJECT_ID}/compute?type=spaces"
+          DATAZONE_URL="https://${DATAZONE_DOMAIN_ID}.sagemaker.${AWS_REGION}.on.aws/projects/${PROJECT_ID}/compute?type=spaces"
           
           # Apply E2E testing patches
+          ./scripts/prepare-src.sh code-editor-sagemaker-server
+
+          # Clean up large directories we no longer need
+          rm -rf third-party-src/ vscode-reh-web-linux-x64/ artifacts/
+          docker system prune -af --volumes
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* ~/.npm ~/.cache
+          df -h
 
           cd code-editor-src
           rm -rf .pc
           export QUILT_PATCHES=../patches/test 
           export QUILT_SERIES=../patches/test/sagemaker-testing.series
           quilt push -a -f
-  
+          
+          npm ci --no-audit --no-fund --prefer-offline
+          
           # Run smoke tests with DataZone authentication
           cd test/smoke
-          npm i
+          npm i --no-audit --no-fund --prefer-offline
           cd ..
-          npm install mocha
+          npm install mocha --no-audit --no-fund
           cd smoke
           npm run compile
           npx playwright install
-          SSO_USERNAME="$SSO_USERNAME" SSO_PASSWORD="$SSO_PASSWORD" DATAZONE_URL="$DATAZONE_URL" SPACE_NAME="$SAGEMAKER_SPACE_NAME" VSCODE_REMOTE_SERVER_PATH="sagemaker" npm run mocha -- --web --headless
+          SSO_USERNAME="$SSO_USERNAME" SSO_PASSWORD="$SSO_PASSWORD" DATAZONE_URL="$DATAZONE_URL" SPACE_NAME="$SAGEMAKER_SPACE_NAME" VSCODE_REMOTE_SERVER_PATH="sagemaker" npm run mocha -- --web --timeout 300000 --headless
 
       - name: Clean up SageMaker resources
         if: always()
@@ -438,3 +432,4 @@ jobs:
           
           echo "ECR cleanup completed"
             
+
