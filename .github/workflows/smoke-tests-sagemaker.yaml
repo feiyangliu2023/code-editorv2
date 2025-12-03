@@ -102,42 +102,17 @@ jobs:
           role-to-assume: ${{ secrets.TEST_SAGEMAKER_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Create or verify project profile
+      - name: Get existing enabled project profile
         run: |
-          PROFILE_NAME="test-profile-${{ github.run_id }}"
-          PROFILE_ID=$(aws datazone list-project-profiles --domain-identifier "$DATAZONE_DOMAIN_ID" --query "items[?name=='$PROFILE_NAME'].id" --output text 2>&1 || echo "")
+          # Use first available ENABLED project profile
+          PROFILE_ID=$(aws datazone list-project-profiles --domain-identifier "$DATAZONE_DOMAIN_ID" --query "items[?status=='ENABLED'].id | [0]" --output text)
           
-          if [ -n "$PROFILE_ID" ] && [ "$PROFILE_ID" != "None" ]; then
-            echo "Project profile '$PROFILE_NAME' already exists: $PROFILE_ID"
-          else
-            echo "Creating project profile '$PROFILE_NAME'..."
-            CREATE_OUTPUT=$(aws datazone create-project-profile \
-              --domain-identifier "$DATAZONE_DOMAIN_ID" \
-              --name "$PROFILE_NAME" \
-              --description "E2E test profile for run ${{ github.run_id }}" 2>&1)
-            echo "Create profile output: $CREATE_OUTPUT"
-            PROFILE_ID=$(echo "$CREATE_OUTPUT" | jq -r '.id // empty')
-            
-            if [ -z "$PROFILE_ID" ]; then
-              echo "Failed to create profile"
-              exit 1
-            fi
-            
-            RETRY_COUNT=0
-            MAX_RETRIES=10
-            while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-              STATUS_OUTPUT=$(aws datazone get-project-profile --domain-identifier "$DATAZONE_DOMAIN_ID" --identifier "$PROFILE_ID" 2>&1)
-              echo "Profile details: $STATUS_OUTPUT"
-              PROFILE_STATUS=$(echo "$STATUS_OUTPUT" | jq -r '.status // "CREATING"')
-              echo "Profile status: $PROFILE_STATUS (attempt $((RETRY_COUNT + 1))/$MAX_RETRIES)"
-              if [ "$PROFILE_STATUS" = "ACTIVE" ] || [ "$PROFILE_STATUS" = "ENABLED" ]; then
-                break
-              fi
-              RETRY_COUNT=$((RETRY_COUNT + 1))
-              sleep 10
-            done
+          if [ -z "$PROFILE_ID" ] || [ "$PROFILE_ID" = "None" ]; then
+            echo "Error: No enabled project profile found"
+            exit 1
           fi
           
+          echo "Using project profile: $PROFILE_ID"
           echo "PROFILE_ID=$PROFILE_ID" >> $GITHUB_ENV
 
       - name: Create or verify project
@@ -274,73 +249,6 @@ jobs:
             --default-user-settings "{\"CodeEditorAppSettings\": {\"CustomImages\": $NEW_IMAGES}}"
           
           echo "Image attached to domain successfully"
-
-      - name: Create or verify project profile
-        run: |
-          PROFILE_NAME="test-profile"
-          PROFILE_ID=$(aws datazone list-project-profiles --domain-identifier "$DATAZONE_DOMAIN_ID" --query "items[?name=='$PROFILE_NAME'].id" --output text 2>/dev/null || echo "")
-          
-          if [ -n "$PROFILE_ID" ]; then
-            echo "Project profile '$PROFILE_NAME' already exists: $PROFILE_ID"
-          else
-            echo "Creating project profile '$PROFILE_NAME'..."
-            PROFILE_ID=$(aws datazone create-project-profile \
-              --domain-identifier "$DATAZONE_DOMAIN_ID" \
-              --name "$PROFILE_NAME" \
-              --description "E2E test profile" \
-              --query 'id' --output text 2>/dev/null || echo "")
-            
-            # Wait for profile to be ready
-            RETRY_COUNT=0
-            MAX_RETRIES=10
-            while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-              PROFILE_STATUS=$(aws datazone get-project-profile --domain-identifier "$DATAZONE_DOMAIN_ID" --identifier "$PROFILE_ID" --query 'status' --output text 2>/dev/null || echo "CREATING")
-              echo "Profile status: $PROFILE_STATUS (attempt $((RETRY_COUNT + 1))/$MAX_RETRIES)"
-              if [ "$PROFILE_STATUS" = "ACTIVE" ]; then
-                break
-              fi
-              RETRY_COUNT=$((RETRY_COUNT + 1))
-              sleep 10
-            done
-          fi
-          
-          # Configure blueprint parameter
-          if [ -n "$PROFILE_ID" ]; then
-            aws datazone update-project-profile \
-              --domain-identifier "$DATAZONE_DOMAIN_ID" \
-              --identifier "$PROFILE_ID" \
-              --environment-configurations '[{"name":"sagemakerDomainNetworkType","value":"PublicInternetOnly"}]' 2>/dev/null || echo "Blueprint parameter configured"
-          fi
-
-      - name: Create or verify project
-        run: |
-          PROJECT_NAME_E2E="e2e-test-project"
-          EXISTING_PROJECT=$(aws datazone list-projects --domain-identifier "$DATAZONE_DOMAIN_ID" --query "items[?name=='$PROJECT_NAME_E2E'].id" --output text 2>/dev/null || echo "")
-          
-          if [ -n "$EXISTING_PROJECT" ]; then
-            echo "Project '$PROJECT_NAME_E2E' already exists"
-          else
-            echo "Creating project '$PROJECT_NAME_E2E'..."
-            PROJECT_ID_NEW=$(aws datazone create-project \
-              --domain-identifier "$DATAZONE_DOMAIN_ID" \
-              --name "$PROJECT_NAME_E2E" \
-              --query 'id' --output text 2>/dev/null || echo "")
-            
-            # Wait for project to be ready
-            if [ -n "$PROJECT_ID_NEW" ]; then
-              RETRY_COUNT=0
-              MAX_RETRIES=20
-              while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-                PROJECT_STATUS=$(aws datazone get-project --domain-identifier "$DATAZONE_DOMAIN_ID" --identifier "$PROJECT_ID_NEW" --query 'projectStatus' --output text 2>/dev/null || echo "CREATING")
-                echo "Project status: $PROJECT_STATUS (attempt $((RETRY_COUNT + 1))/$MAX_RETRIES)"
-                if [ "$PROJECT_STATUS" = "ACTIVE" ]; then
-                  break
-                fi
-                RETRY_COUNT=$((RETRY_COUNT + 1))
-                sleep 30
-              done
-            fi
-          fi
 
       - name: Create SageMaker code editor space
         run: |
