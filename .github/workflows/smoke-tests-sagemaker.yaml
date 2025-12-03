@@ -105,24 +105,32 @@ jobs:
       - name: Create or verify project profile
         run: |
           PROFILE_NAME="test-profile-${{ github.run_id }}"
-          PROFILE_ID=$(aws datazone list-project-profiles --domain-identifier "$DATAZONE_DOMAIN_ID" --query "items[?name=='$PROFILE_NAME'].id" --output text 2>/dev/null || echo "")
+          PROFILE_ID=$(aws datazone list-project-profiles --domain-identifier "$DATAZONE_DOMAIN_ID" --query "items[?name=='$PROFILE_NAME'].id" --output text 2>&1 || echo "")
           
-          if [ -n "$PROFILE_ID" ]; then
+          if [ -n "$PROFILE_ID" ] && [ "$PROFILE_ID" != "None" ]; then
             echo "Project profile '$PROFILE_NAME' already exists: $PROFILE_ID"
           else
             echo "Creating project profile '$PROFILE_NAME'..."
-            PROFILE_ID=$(aws datazone create-project-profile \
+            CREATE_OUTPUT=$(aws datazone create-project-profile \
               --domain-identifier "$DATAZONE_DOMAIN_ID" \
               --name "$PROFILE_NAME" \
-              --description "E2E test profile for run ${{ github.run_id }}" \
-              --query 'id' --output text)
+              --description "E2E test profile for run ${{ github.run_id }}" 2>&1)
+            echo "Create profile output: $CREATE_OUTPUT"
+            PROFILE_ID=$(echo "$CREATE_OUTPUT" | jq -r '.id // empty')
+            
+            if [ -z "$PROFILE_ID" ]; then
+              echo "Failed to create profile"
+              exit 1
+            fi
             
             RETRY_COUNT=0
             MAX_RETRIES=10
             while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-              PROFILE_STATUS=$(aws datazone get-project-profile --domain-identifier "$DATAZONE_DOMAIN_ID" --identifier "$PROFILE_ID" --query 'status' --output text 2>/dev/null || echo "CREATING")
+              STATUS_OUTPUT=$(aws datazone get-project-profile --domain-identifier "$DATAZONE_DOMAIN_ID" --identifier "$PROFILE_ID" 2>&1)
+              echo "Profile details: $STATUS_OUTPUT"
+              PROFILE_STATUS=$(echo "$STATUS_OUTPUT" | jq -r '.status // "CREATING"')
               echo "Profile status: $PROFILE_STATUS (attempt $((RETRY_COUNT + 1))/$MAX_RETRIES)"
-              if [ "$PROFILE_STATUS" = "ACTIVE" ]; then
+              if [ "$PROFILE_STATUS" = "ACTIVE" ] || [ "$PROFILE_STATUS" = "ENABLED" ]; then
                 break
               fi
               RETRY_COUNT=$((RETRY_COUNT + 1))
@@ -135,22 +143,30 @@ jobs:
       - name: Create or verify project
         run: |
           PROJECT_NAME_E2E="e2e-test-project-${{ github.run_id }}"
-          EXISTING_PROJECT=$(aws datazone list-projects --domain-identifier "$DATAZONE_DOMAIN_ID" --query "items[?name=='$PROJECT_NAME_E2E'].id" --output text 2>/dev/null || echo "")
+          EXISTING_PROJECT=$(aws datazone list-projects --domain-identifier "$DATAZONE_DOMAIN_ID" --query "items[?name=='$PROJECT_NAME_E2E'].id" --output text 2>&1 || echo "")
           
-          if [ -n "$EXISTING_PROJECT" ]; then
+          if [ -n "$EXISTING_PROJECT" ] && [ "$EXISTING_PROJECT" != "None" ]; then
             echo "Project '$PROJECT_NAME_E2E' already exists"
             PROJECT_ID="$EXISTING_PROJECT"
           else
             echo "Creating project '$PROJECT_NAME_E2E'..."
-            PROJECT_ID=$(aws datazone create-project \
+            CREATE_OUTPUT=$(aws datazone create-project \
               --domain-identifier "$DATAZONE_DOMAIN_ID" \
-              --name "$PROJECT_NAME_E2E" \
-              --query 'id' --output text)
+              --name "$PROJECT_NAME_E2E" 2>&1)
+            echo "Create project output: $CREATE_OUTPUT"
+            PROJECT_ID=$(echo "$CREATE_OUTPUT" | jq -r '.id // empty')
+            
+            if [ -z "$PROJECT_ID" ]; then
+              echo "Failed to create project"
+              exit 1
+            fi
             
             RETRY_COUNT=0
             MAX_RETRIES=20
             while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-              PROJECT_STATUS=$(aws datazone get-project --domain-identifier "$DATAZONE_DOMAIN_ID" --identifier "$PROJECT_ID" --query 'projectStatus' --output text 2>/dev/null || echo "CREATING")
+              STATUS_OUTPUT=$(aws datazone get-project --domain-identifier "$DATAZONE_DOMAIN_ID" --identifier "$PROJECT_ID" 2>&1)
+              echo "Project details: $STATUS_OUTPUT"
+              PROJECT_STATUS=$(echo "$STATUS_OUTPUT" | jq -r '.projectStatus // "CREATING"')
               echo "Project status: $PROJECT_STATUS (attempt $((RETRY_COUNT + 1))/$MAX_RETRIES)"
               if [ "$PROJECT_STATUS" = "ACTIVE" ]; then
                 break
