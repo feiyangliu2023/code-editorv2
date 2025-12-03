@@ -110,35 +110,14 @@ jobs:
           if [ -n "$PROFILE_ID" ] && [ "$PROFILE_ID" != "None" ]; then
             echo "Project profile '$PROFILE_NAME' already exists: $PROFILE_ID"
           else
-            echo "Listing available blueprints..."
-            aws datazone list-environment-blueprints --domain-identifier "$DATAZONE_DOMAIN_ID" --query "items[].{name:name,id:id,status:status}" --output table
-            
-            BLUEPRINT_ID=$(aws datazone list-environment-blueprints --domain-identifier "$DATAZONE_DOMAIN_ID" --query "items[?contains(name, 'Tooling')].id | [0]" --output text)
-            
-            if [ -z "$BLUEPRINT_ID" ] || [ "$BLUEPRINT_ID" = "None" ] || [ "$BLUEPRINT_ID" = "null" ]; then
-              echo "Tooling blueprint not found, creating profile without blueprint"
-              BLUEPRINT_ID=""
-            else
-              echo "Found Tooling blueprint: $BLUEPRINT_ID"
-            fi
-            
-            echo "Creating project profile..."
-            if [ -n "$BLUEPRINT_ID" ]; then
-              PROFILE_ID=$(aws datazone create-project-profile \
-                --domain-identifier "$DATAZONE_DOMAIN_ID" \
-                --name "$PROFILE_NAME" \
-                --description "E2E test profile" \
-                --status ENABLED \
-                --environment-blueprint-identifier "$BLUEPRINT_ID" \
-                --query 'id' --output text)
-            else
-              PROFILE_ID=$(aws datazone create-project-profile \
-                --domain-identifier "$DATAZONE_DOMAIN_ID" \
-                --name "$PROFILE_NAME" \
-                --description "E2E test profile" \
-                --status ENABLED \
-                --query 'id' --output text)
-            fi
+            echo "Creating project profile with Tooling blueprint (default)..."
+            PROFILE_ID=$(aws datazone create-project-profile \
+              --domain-identifier "$DATAZONE_DOMAIN_ID" \
+              --name "$PROFILE_NAME" \
+              --description "E2E test profile" \
+              --status ENABLED \
+              --environment-configurations '[{"deploymentOrder":1,"environmentBlueprintId":"Tooling","name":"Tooling","regionalParameters":{"awsAccountId":"'$AWS_ACCOUNT_ID'","awsRegion":"'$AWS_REGION'"}}]' \
+              --query 'id' --output text)
             
             if [ -z "$PROFILE_ID" ] || [ "$PROFILE_ID" = "None" ]; then
               echo "Failed to create profile"
