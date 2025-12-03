@@ -110,12 +110,21 @@ jobs:
           if [ -n "$PROFILE_ID" ] && [ "$PROFILE_ID" != "None" ]; then
             echo "Project profile '$PROFILE_NAME' already exists: $PROFILE_ID"
           else
-            echo "Creating project profile '$PROFILE_NAME'..."
+            echo "Finding Tooling blueprint..."
+            BLUEPRINT_ID=$(aws datazone list-environment-blueprints --domain-identifier "$DATAZONE_DOMAIN_ID" --query "items[?name=='Tooling'].id" --output text)
+            
+            if [ -z "$BLUEPRINT_ID" ] || [ "$BLUEPRINT_ID" = "None" ]; then
+              echo "ERROR: Tooling blueprint not found"
+              exit 1
+            fi
+            
+            echo "Creating project profile with Tooling blueprint: $BLUEPRINT_ID"
             PROFILE_ID=$(aws datazone create-project-profile \
               --domain-identifier "$DATAZONE_DOMAIN_ID" \
               --name "$PROFILE_NAME" \
               --description "E2E test profile" \
               --status ENABLED \
+              --environment-blueprint-identifier "$BLUEPRINT_ID" \
               --query 'id' --output text)
             
             if [ -z "$PROFILE_ID" ] || [ "$PROFILE_ID" = "None" ]; then
@@ -126,52 +135,82 @@ jobs:
             echo "Profile created with ID: $PROFILE_ID"
           fi
           
-          # Configure blueprint parameter for SageMaker domain network type
-          echo "Configuring blueprint parameters..."
-          aws datazone update-project-profile \
-            --domain-identifier "$DATAZONE_DOMAIN_ID" \
-            --identifier "$PROFILE_ID" \
-            --environment-configurations '[{"name":"sagemakerDomainNetworkType","value":"PublicInternetOnly"}]' || echo "Blueprint parameter configuration attempted"
-          
           echo "PROFILE_ID=$PROFILE_ID" >> $GITHUB_ENV
 
       - name: Create or verify project
         run: |
           PROJECT_NAME_E2E="e2e-test-project-${{ github.run_id }}"
+          echo "Checking for existing project: $PROJECT_NAME_E2E"
           EXISTING_PROJECT=$(aws datazone list-projects --domain-identifier "$DATAZONE_DOMAIN_ID" --query "items[?name=='$PROJECT_NAME_E2E'].id" --output text 2>&1 || echo "")
+          echo "Existing project check result: '$EXISTING_PROJECT'"
           
           if [ -n "$EXISTING_PROJECT" ] && [ "$EXISTING_PROJECT" != "None" ]; then
             echo "Project '$PROJECT_NAME_E2E' already exists"
             PROJECT_ID="$EXISTING_PROJECT"
           else
             echo "Creating project '$PROJECT_NAME_E2E'..."
+            echo "Using domain: $DATAZONE_DOMAIN_ID"
+            echo "Using profile: $PROFILE_ID"
+            
             CREATE_OUTPUT=$(aws datazone create-project \
               --domain-identifier "$DATAZONE_DOMAIN_ID" \
               --name "$PROJECT_NAME_E2E" \
               --project-profile-id "$PROFILE_ID" 2>&1)
-            echo "Create project output: $CREATE_OUTPUT"
-            PROJECT_ID=$(echo "$CREATE_OUTPUT" | jq -r '.id // empty')
+            CREATE_EXIT_CODE=$?
             
-            if [ -z "$PROJECT_ID" ]; then
-              echo "Failed to create project"
+            echo "Create project exit code: $CREATE_EXIT_CODE"
+            echo "Create project output: $CREATE_OUTPUT"
+            
+            if [ $CREATE_EXIT_CODE -ne 0 ]; then
+              echo "ERROR: create-project command failed with exit code $CREATE_EXIT_CODE"
+              echo "Full error output: $CREATE_OUTPUT"
               exit 1
             fi
             
+            PROJECT_ID=$(echo "$CREATE_OUTPUT" | jq -r '.id // empty')
+            echo "Extracted project ID: '$PROJECT_ID'"
+            
+            if [ -z "$PROJECT_ID" ]; then
+              echo "ERROR: Failed to extract project ID from output"
+              echo "Raw output was: $CREATE_OUTPUT"
+              exit 1
+            fi
+            
+            echo "Waiting for project to become ACTIVE..."
             RETRY_COUNT=0
             MAX_RETRIES=20
             while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
               STATUS_OUTPUT=$(aws datazone get-project --domain-identifier "$DATAZONE_DOMAIN_ID" --identifier "$PROJECT_ID" 2>&1)
-              echo "Project details: $STATUS_OUTPUT"
+              STATUS_EXIT_CODE=$?
+              
+              if [ $STATUS_EXIT_CODE -ne 0 ]; then
+                echo "WARNING: get-project failed with exit code $STATUS_EXIT_CODE"
+                echo "Error output: $STATUS_OUTPUT"
+              fi
+              
               PROJECT_STATUS=$(echo "$STATUS_OUTPUT" | jq -r '.projectStatus // "CREATING"')
               echo "Project status: $PROJECT_STATUS (attempt $((RETRY_COUNT + 1))/$MAX_RETRIES)"
+              
               if [ "$PROJECT_STATUS" = "ACTIVE" ]; then
+                echo "Project is now ACTIVE"
                 break
+              elif [ "$PROJECT_STATUS" = "DELETE_FAILED" ] || [ "$PROJECT_STATUS" = "UPDATE_FAILED" ]; then
+                echo "ERROR: Project entered failed state: $PROJECT_STATUS"
+                exit 1
               fi
+              
               RETRY_COUNT=$((RETRY_COUNT + 1))
               sleep 30
             done
+            
+            if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+              echo "ERROR: Timeout waiting for project to become ACTIVE"
+              echo "Final status: $PROJECT_STATUS"
+              exit 1
+            fi
           fi
           
+          echo "Final project ID: $PROJECT_ID"
           echo "::add-mask::$PROJECT_ID"
           echo "PROJECT_ID=$PROJECT_ID" >> $GITHUB_ENV
 
