@@ -102,17 +102,37 @@ jobs:
           role-to-assume: ${{ secrets.TEST_SAGEMAKER_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Get existing enabled project profile
+      - name: Create or verify project profile
         run: |
-          # Use first available ENABLED project profile
-          PROFILE_ID=$(aws datazone list-project-profiles --domain-identifier "$DATAZONE_DOMAIN_ID" --query "items[?status=='ENABLED'].id | [0]" --output text)
+          PROFILE_NAME="test-profile"
+          PROFILE_ID=$(aws datazone list-project-profiles --domain-identifier "$DATAZONE_DOMAIN_ID" --query "items[?name=='$PROFILE_NAME'].id" --output text 2>&1 || echo "")
           
-          if [ -z "$PROFILE_ID" ] || [ "$PROFILE_ID" = "None" ]; then
-            echo "Error: No enabled project profile found"
-            exit 1
+          if [ -n "$PROFILE_ID" ] && [ "$PROFILE_ID" != "None" ]; then
+            echo "Project profile '$PROFILE_NAME' already exists: $PROFILE_ID"
+          else
+            echo "Creating project profile '$PROFILE_NAME'..."
+            PROFILE_ID=$(aws datazone create-project-profile \
+              --domain-identifier "$DATAZONE_DOMAIN_ID" \
+              --name "$PROFILE_NAME" \
+              --description "E2E test profile" \
+              --status ENABLED \
+              --query 'id' --output text)
+            
+            if [ -z "$PROFILE_ID" ] || [ "$PROFILE_ID" = "None" ]; then
+              echo "Failed to create profile"
+              exit 1
+            fi
+            
+            echo "Profile created with ID: $PROFILE_ID"
           fi
           
-          echo "Using project profile: $PROFILE_ID"
+          # Configure blueprint parameter for SageMaker domain network type
+          echo "Configuring blueprint parameters..."
+          aws datazone update-project-profile \
+            --domain-identifier "$DATAZONE_DOMAIN_ID" \
+            --identifier "$PROFILE_ID" \
+            --environment-configurations '[{"name":"sagemakerDomainNetworkType","value":"PublicInternetOnly"}]' || echo "Blueprint parameter configuration attempted"
+          
           echo "PROFILE_ID=$PROFILE_ID" >> $GITHUB_ENV
 
       - name: Create or verify project
@@ -127,7 +147,8 @@ jobs:
             echo "Creating project '$PROJECT_NAME_E2E'..."
             CREATE_OUTPUT=$(aws datazone create-project \
               --domain-identifier "$DATAZONE_DOMAIN_ID" \
-              --name "$PROJECT_NAME_E2E" 2>&1)
+              --name "$PROJECT_NAME_E2E" \
+              --project-profile-id "$PROFILE_ID" 2>&1)
             echo "Create project output: $CREATE_OUTPUT"
             PROJECT_ID=$(echo "$CREATE_OUTPUT" | jq -r '.id // empty')
             
@@ -153,6 +174,25 @@ jobs:
           
           echo "::add-mask::$PROJECT_ID"
           echo "PROJECT_ID=$PROJECT_ID" >> $GITHUB_ENV
+
+      - name: Add SSO user to project
+        env:
+          SSO_USERNAME: ${{ secrets.SSO_USERNAME }}
+        run: |
+          USER_ID=$(aws datazone search-user-profiles --domain-identifier "$DATAZONE_DOMAIN_ID" --user-type SSO_USER --query "items[?details.sso.username=='$SSO_USERNAME'].id" --output text)
+          
+          if [ -z "$USER_ID" ] || [ "$USER_ID" = "None" ]; then
+            echo "SSO user not found in DataZone domain"
+            exit 1
+          fi
+          
+          aws datazone create-project-membership \
+            --domain-identifier "$DATAZONE_DOMAIN_ID" \
+            --project-identifier "$PROJECT_ID" \
+            --designation PROJECT_OWNER \
+            --member userIdentifier="$USER_ID"
+          
+          echo "SSO user added to project as PROJECT_OWNER"
 
       - name: Create SageMaker code editor image
         run: |
