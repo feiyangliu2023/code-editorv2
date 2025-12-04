@@ -212,25 +212,6 @@ jobs:
           echo "::add-mask::$PROJECT_ID"
           echo "PROJECT_ID=$PROJECT_ID" >> $GITHUB_ENV
 
-      - name: Add SSO user to project
-        env:
-          SSO_USERNAME: ${{ secrets.SSO_USERNAME }}
-        run: |
-          USER_ID=$(aws datazone search-user-profiles --domain-identifier "$DATAZONE_DOMAIN_ID" --user-type SSO_USER --query "items[?details.sso.username=='$SSO_USERNAME'].id" --output text)
-          
-          if [ -z "$USER_ID" ] || [ "$USER_ID" = "None" ]; then
-            echo "SSO user not found in DataZone domain"
-            exit 1
-          fi
-          
-          aws datazone create-project-membership \
-            --domain-identifier "$DATAZONE_DOMAIN_ID" \
-            --project-identifier "$PROJECT_ID" \
-            --designation PROJECT_OWNER \
-            --member userIdentifier="$USER_ID"
-          
-          echo "SSO user added to project as PROJECT_OWNER"
-
       - name: Create SageMaker code editor image
         run: |
           # Find SageMaker domain by project ID (domain name contains project ID)
