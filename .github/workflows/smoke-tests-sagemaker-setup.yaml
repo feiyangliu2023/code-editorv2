@@ -143,9 +143,10 @@ jobs:
           echo "SAGEMAKER_DOMAIN_ID=$DOMAIN_ID" >> $GITHUB_ENV
           echo "PROJECT_ID=$PROJECT_ID" >> $GITHUB_ENV
 
-          # Create SageMaker image
+          # Create SageMaker image (name must be ≤63 chars)
           BRANCH_NAME=$(echo "$GH_REF_NAME" | sed 's/[^a-zA-Z0-9-]/-/g')
-          IMAGE_NAME="$BRANCH_NAME-${COMMIT_SHA}"
+          SHORT_SHA="${COMMIT_SHA:0:8}"
+          IMAGE_NAME="$BRANCH_NAME-$SHORT_SHA"
           aws sagemaker create-image \
             --image-name "$IMAGE_NAME" \
             --role-arn $TEST_SAGEMAKER_ROLE
@@ -227,9 +228,10 @@ jobs:
 
       - name: Create SageMaker code editor space
         run: |
-          # Create space name using branch-commit format
+          # Create space name using branch-commit format (must be ≤63 chars)
           BRANCH_NAME=$(echo "$GH_REF_NAME" | sed 's/[^a-zA-Z0-9-]/-/g')
-          SPACE_NAME="$BRANCH_NAME-${COMMIT_SHA}"
+          SHORT_SHA="${COMMIT_SHA:0:8}"
+          SPACE_NAME="$BRANCH_NAME-$SHORT_SHA"
           
           # Create the space with project ownership
           aws sagemaker create-space \
