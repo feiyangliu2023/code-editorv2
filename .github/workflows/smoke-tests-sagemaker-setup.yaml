@@ -20,7 +20,7 @@ jobs:
       id-token: write
       contents: read
     env:
-      COMMIT_SHA: ${{ inputs.commit_sha || github.sha }}
+      COMMIT_SHA: ${{ inputs.commit_sha || 'd2160ac709de6e8d1380b1ec501a6295882602b4' }}
       GH_REF_NAME: ${{ github.ref_name }}
       SAGEMAKER_ARTIFACT_PREFIX: "code-editor-sagemaker-server"
       GH_TOKEN: ${{ github.token }}
