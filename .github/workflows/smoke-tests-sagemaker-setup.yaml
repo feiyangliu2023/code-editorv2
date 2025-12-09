@@ -1,12 +1,15 @@
 name: SageMaker Setup for Manual Testing
 
-on: 
+on:
   workflow_dispatch:
     inputs:
       commit_sha:
         description: 'Commit SHA to use for artifacts'
         required: false
         type: string
+  push:
+    branches:
+      - clean-sagemaker-test-setup
 
 jobs:
   sagemaker-setup:
