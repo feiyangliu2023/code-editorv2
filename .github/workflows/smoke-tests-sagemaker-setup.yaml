@@ -7,9 +7,6 @@ on:
         description: 'Commit SHA to use for artifacts'
         required: false
         type: string
-  push:
-    branches:
-      - clean-sagemaker-test-setup
 
 jobs:
   sagemaker-setup:

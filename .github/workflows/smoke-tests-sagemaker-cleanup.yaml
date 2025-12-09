@@ -11,9 +11,6 @@ on:
         description: 'SageMaker Image Name'
         required: true
         type: string
-  push:
-    branches:
-      - clean-sagemaker-test-setup
 
 jobs:
   sagemaker-cleanup:
