@@ -1,0 +1,136 @@
+name: SageMaker Cleanup
+
+on: 
+  workflow_dispatch:
+    inputs:
+      space_name:
+        description: 'SageMaker Space Name'
+        required: true
+        type: string
+      image_name:
+        description: 'SageMaker Image Name'
+        required: true
+        type: string
+
+jobs:
+  sagemaker-cleanup:
+    name: Cleanup SageMaker Resources
+    runs-on: ubuntu-latest
+    environment: sagemaker-e2e-tests-workflow-env
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      COMMIT_SHA: ${{ github.sha }}
+      GH_REF_NAME: ${{ github.ref_name }}
+      SAGEMAKER_SPACE_NAME: ${{ inputs.space_name }}
+      SAGEMAKER_IMAGE_NAME: ${{ inputs.image_name }}
+      ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+      AWS_REGION: us-east-1
+      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+      PROJECT_NAME: ${{ secrets.PROJECT_NAME }}
+      DATAZONE_DOMAIN_ID: ${{ secrets.DATAZONE_DOMAIN_ID }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure SageMaker role AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.TEST_SAGEMAKER_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Get SageMaker domain ID
+        run: |
+          # Fetch DataZone project ID
+          PROJECT_ID=$(aws datazone list-projects --domain-identifier "$DATAZONE_DOMAIN_ID" --name "$PROJECT_NAME" --query 'items[0].id' --output text)
+          
+          if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "None" ]; then
+            echo "Error: DataZone project not found"
+            exit 1
+          fi
+          
+          # Find SageMaker domain by project ID
+          DOMAIN_ID=$(aws sagemaker list-domains --query "Domains[?contains(DomainName, '$PROJECT_ID')].DomainId" --output text)
+          
+          if [ -z "$DOMAIN_ID" ]; then
+            echo "Error: SageMaker domain not found for project ID"
+            exit 1
+          fi
+          
+          echo "SAGEMAKER_DOMAIN_ID=$DOMAIN_ID" >> $GITHUB_ENV
+
+      - name: Clean up SageMaker resources
+        run: |
+          echo "Starting SageMaker cleanup..."
+          CLEANUP_FAILED=0
+          
+          # Delete app first
+          echo "Deleting app..."
+          aws sagemaker delete-app \
+            --domain-id "$SAGEMAKER_DOMAIN_ID" \
+            --space-name "$SAGEMAKER_SPACE_NAME" \
+            --app-type "CodeEditor" \
+            --app-name "default" || CLEANUP_FAILED=1
+          
+          # Wait for app to be deleted
+          echo "Waiting for app to be deleted..."
+          RETRY_COUNT=0
+          MAX_RETRIES=10
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            APP_STATUS=$(aws sagemaker describe-app --domain-id "$SAGEMAKER_DOMAIN_ID" --space-name "$SAGEMAKER_SPACE_NAME" --app-type "CodeEditor" --app-name "default" --query 'Status' --output text 2>/dev/null || echo "Deleted")
+            echo "App status: $APP_STATUS"
+            if [ "$APP_STATUS" = "Deleted" ]; then
+              break
+            fi
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            sleep 10
+          done
+          
+          # Delete space
+          echo "Deleting space..."
+          aws sagemaker delete-space \
+            --domain-id "$SAGEMAKER_DOMAIN_ID" \
+            --space-name "$SAGEMAKER_SPACE_NAME" || CLEANUP_FAILED=1
+          
+          # Remove image from domain
+          echo "Removing image from domain..."
+          EXISTING_IMAGES=$(aws sagemaker describe-domain --domain-id "$SAGEMAKER_DOMAIN_ID" --query 'DefaultUserSettings.CodeEditorAppSettings.CustomImages' --output json 2>/dev/null || echo '[]')
+          FILTERED_IMAGES=$(echo "$EXISTING_IMAGES" | jq --arg imageName "$SAGEMAKER_IMAGE_NAME" 'map(select(.ImageName != $imageName))')
+          aws sagemaker update-domain \
+            --domain-id "$SAGEMAKER_DOMAIN_ID" \
+            --default-user-settings "{\"CodeEditorAppSettings\": {\"CustomImages\": $FILTERED_IMAGES}}" || CLEANUP_FAILED=1
+          
+          # Delete SageMaker image version
+          echo "Deleting SageMaker image version..."
+          aws sagemaker delete-image-version \
+            --image-name "$SAGEMAKER_IMAGE_NAME" \
+            --version 1 || CLEANUP_FAILED=1
+          
+          # Delete SageMaker image
+          echo "Deleting SageMaker image..."
+          aws sagemaker delete-image \
+            --image-name "$SAGEMAKER_IMAGE_NAME" || CLEANUP_FAILED=1
+          
+          if [ $CLEANUP_FAILED -eq 1 ]; then
+            echo "SageMaker cleanup completed with some failures"
+          else
+            echo "SageMaker cleanup completed successfully"
+          fi
+
+      - name: Configure ECR role for cleanup
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.TEST_ECR_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Clean up ECR resources
+        run: |
+          echo "Starting ECR cleanup..."
+          BRANCH_NAME=$(echo "$GH_REF_NAME" | sed 's/[^a-zA-Z0-9-]/-/g')
+          IMAGE_TAG="$BRANCH_NAME-$COMMIT_SHA"
+          aws ecr batch-delete-image \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag="$IMAGE_TAG" || echo "ECR cleanup failed"
+          
+          echo "ECR cleanup completed"
