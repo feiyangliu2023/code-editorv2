@@ -10,6 +10,10 @@ on:
         description: 'SageMaker Code Editor version'
         required: true
         type: string
+      commit_sha:
+        description: 'Commit SHA (leave empty to use current commit)'
+        required: false
+        type: string
 
 jobs:
   release:
@@ -17,7 +21,7 @@ jobs:
     permissions:
       contents: write  # Required for creating releases
     env:
-      COMMIT_SHA: ${{ github.sha }}
+      COMMIT_SHA: ${{ github.event.inputs.commit_sha || github.sha }}
       CODE_EDITOR_VERSION: ${{ github.event.inputs.code_editor_version }}
       SAGEMAKER_VERSION: ${{ github.event.inputs.sagemaker_version }}
       SAGEMAKER_ARTIFACT_PREFIX: "code-editor-sagemaker-server"
