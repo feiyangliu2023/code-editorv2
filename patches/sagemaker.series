@@ -29,6 +29,7 @@ web-server/signature-verification.diff
 sagemaker/sagemaker-extension.diff
 sagemaker/update-csp.diff
 sagemaker/sagemaker-integration.diff
+sagemaker/display-both-versions-in-about.diff
 sagemaker/base-path-compatibility.diff
 sagemaker/sagemaker-idle-extension.diff
 sagemaker/terminal-crash-mitigation.diff

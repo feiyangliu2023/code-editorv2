@@ -1,0 +1,20 @@
+Display both Code Editor and SageMaker Code Editor versions in About dialog
+
+---
+Index: third-party-src/src/vs/workbench/browser/parts/dialogs/dialogHandler.ts
+===================================================================
+--- third-party-src.orig/src/vs/workbench/browser/parts/dialogs/dialogHandler.ts
++++ third-party-src/src/vs/workbench/browser/parts/dialogs/dialogHandler.ts
+@@ -77,9 +77,10 @@ export class BrowserDialogHandler extend
+ 	async about(): Promise<void> {
+ 		const detailString = (): string => {
+ 			return localize('aboutDetail',
+-				"Note: The Lambda Code Editor doesn't include all of the features available in the desktop application. To use features like the terminal and debugger, download your code and use the desktop version.",
++				"SageMaker Code Editor Version: {0}\nCode Editor Version: {1}\nCode - OSS Version: {2}\nBrowser: {3}",
++				this.productService.sagemakerCodeEditorVersion || 'Unknown',
++				this.productService.codeEditorVersion || 'Unknown',
++				this.productService.version || 'Unknown',
++				navigator.userAgent
+ 			);
+ 		};
+ 
