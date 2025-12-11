@@ -52,6 +52,7 @@ Index: third-party-src/src/vs/base/common/product.ts
  	readonly quality?: string;
  	readonly commit?: string;
 +	readonly codeEditorVersion?: string;
++	readonly sagemakerCodeEditorVersion?: string;
  
  	readonly nameShort: string;
  	readonly nameLong: string;
