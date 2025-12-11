@@ -10,6 +10,10 @@ on:
         description: 'SageMaker Code Editor version'
         required: true
         type: string
+      commit_sha:
+        description: 'Commit SHA (optional, for testing with specific artifacts)'
+        required: false
+        type: string
 
 jobs:
   release:
@@ -28,6 +32,8 @@ jobs:
           fetch-depth: 0
 
       - name: Validate versions and create tag
+        env:
+          MANUAL_COMMIT_SHA: ${{ github.event.inputs.commit_sha }}
         run: |
           if ! echo "$CODE_EDITOR_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$'; then
             echo "Code Editor version $CODE_EDITOR_VERSION does not follow semantic version pattern (x.y.z) or x.y.z-rc.N. Skipping release."
@@ -36,27 +42,33 @@ jobs:
           echo "Code Editor version $CODE_EDITOR_VERSION is valid"
           echo "SageMaker Code Editor version $SAGEMAKER_VERSION will be mapped"
           
-          # Check if tag already exists
-          if git rev-parse "$CODE_EDITOR_VERSION" >/dev/null 2>&1; then
-            echo "Tag $CODE_EDITOR_VERSION already exists"
+          # Use manual commit SHA if provided (for testing)
+          if [ -n "$MANUAL_COMMIT_SHA" ]; then
+            echo "Using manually provided commit SHA: $MANUAL_COMMIT_SHA"
+            echo "COMMIT_SHA=$MANUAL_COMMIT_SHA" >> $GITHUB_ENV
           else
-            echo "Creating tag $CODE_EDITOR_VERSION on current commit"
-            git tag "$CODE_EDITOR_VERSION"
-            git push origin "$CODE_EDITOR_VERSION"
+            # Check if tag already exists
+            if git rev-parse "$CODE_EDITOR_VERSION" >/dev/null 2>&1; then
+              echo "Tag $CODE_EDITOR_VERSION already exists"
+            else
+              echo "Creating tag $CODE_EDITOR_VERSION on current commit"
+              git tag "$CODE_EDITOR_VERSION"
+              git push origin "$CODE_EDITOR_VERSION"
+            fi
+            
+            # Get commit SHA from tag and export it
+            TAG_COMMIT_SHA=$(git rev-parse "$CODE_EDITOR_VERSION")
+            echo "COMMIT_SHA=$TAG_COMMIT_SHA" >> $GITHUB_ENV
+            echo "Tag $CODE_EDITOR_VERSION points to commit $TAG_COMMIT_SHA"
+            
+            # Verify tag is on correct branch
+            MAJOR_MINOR=$(echo "$CODE_EDITOR_VERSION" | cut -d'.' -f1,2)
+            if ! git branch --remote --contains "$CODE_EDITOR_VERSION" | grep -q "origin/$MAJOR_MINOR"; then
+              echo "Error: Tag $CODE_EDITOR_VERSION is not on branch $MAJOR_MINOR. Skipping release."
+              exit 1
+            fi
+            echo "Tag validation passed"
           fi
-          
-          # Get commit SHA from tag and export it
-          TAG_COMMIT_SHA=$(git rev-parse "$CODE_EDITOR_VERSION")
-          echo "COMMIT_SHA=$TAG_COMMIT_SHA" >> $GITHUB_ENV
-          echo "Tag $CODE_EDITOR_VERSION points to commit $TAG_COMMIT_SHA"
-          
-          # Verify tag is on correct branch
-          MAJOR_MINOR=$(echo "$CODE_EDITOR_VERSION" | cut -d'.' -f1,2)
-          if ! git branch --remote --contains "$CODE_EDITOR_VERSION" | grep -q "origin/$MAJOR_MINOR"; then
-            echo "Error: Tag $CODE_EDITOR_VERSION is not on branch $MAJOR_MINOR. Skipping release."
-            exit 1
-          fi
-          echo "Tag validation passed"
 
       - name: Download sagemaker artifacts by commit ID
         run: |
