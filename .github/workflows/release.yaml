@@ -3,6 +3,16 @@ on:
   push:
     tags:
       - '*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number (e.g., 1.0.0 or 1.0.0-rc.1)'
+        required: true
+        type: string
+      commit_sha:
+        description: 'Commit SHA (optional, defaults to current commit)'
+        required: false
+        type: string
 
 jobs:
   release:
@@ -10,7 +20,7 @@ jobs:
     permissions:
       contents: write  # Required for creating releases
     env:
-      COMMIT_SHA: ${{ github.sha }}
+      COMMIT_SHA: ${{ inputs.commit_sha || github.sha }}
       VERSION_NUM: ${{ github.event.inputs.version || github.ref_name }}
       SAGEMAKER_ARTIFACT_PREFIX: "code-editor-sagemaker-server"
       GH_TOKEN: ${{ github.token }}
