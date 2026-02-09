@@ -73,3 +73,36 @@ Index: third-party-src/remote/package.json
      "minimist": "^1.2.6",
      "native-watchdog": "^1.4.1",
      "node-pty": "^1.1.0-beta33",
+Index: third-party-src/build/gulpfile.compile.js
+===================================================================
+--- third-party-src.orig/build/gulpfile.compile.js
++++ third-party-src/build/gulpfile.compile.js
+@@ -12,24 +12,21 @@ const date = require('./lib/date');
+ const task = require('./lib/task');
+ const compilation = require('./lib/compilation');
+ 
+-/**
+- * @param {boolean} disableMangle
+- */
+-function makeCompileBuildTask(disableMangle) {
++function makeCompileBuildTask() {
+ 	return task.series(
+ 		util.rimraf('out-build'),
+ 		date.writeISODate('out-build'),
+ 		compilation.compileApiProposalNamesTask,
+-		compilation.compileTask('src', 'out-build', true, { disableMangle })
++		compilation.compileTask('src', 'out-build', true, { disableMangle: true })
+ 	);
+ }
+ 
+ // Local/PR compile, including nls and inline sources in sourcemaps, minification, no mangling
+-const compileBuildWithoutManglingTask = task.define('compile-build-without-mangling', makeCompileBuildTask(true));
++const compileBuildWithoutManglingTask = task.define('compile-build-without-mangling', makeCompileBuildTask());
+ gulp.task(compileBuildWithoutManglingTask);
+ exports.compileBuildWithoutManglingTask = compileBuildWithoutManglingTask;
+ 
+ // CI compile, including nls and inline sources in sourcemaps, mangling, minification, for build
+-const compileBuildWithManglingTask = task.define('compile-build-with-mangling', makeCompileBuildTask(false));
++const compileBuildWithManglingTask = task.define('compile-build-with-mangling', makeCompileBuildTask());
+ gulp.task(compileBuildWithManglingTask);
+ exports.compileBuildWithManglingTask = compileBuildWithManglingTask;
